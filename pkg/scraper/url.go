@@ -254,12 +254,8 @@ func urlFromCDP(ctx context.Context, urlCDP string, driverOptions scraperDriverO
 	var res string
 	headers := cdpHeaders(driverOptions)
 
-	// Track the main document response so that, if it turns out to be JSON,
-	// we can pull the raw response body via CDP's Network domain instead of
-	// reading the rendered DOM. Chrome's built-in JSON viewer wraps raw JSON
-	// responses in an HTML pretty-printer when navigated to directly, so
-	// OuterHTML on such a page returns HTML containing the JSON rather than
-	// the JSON itself.
+	// Track the main document so a JSON response can be read via its raw
+	// body instead of Chrome's HTML-wrapped OuterHTML view.
 	var jsonDoc jsonDocumentTracker
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
 		if ev, ok := ev.(*network.EventResponseReceived); ok {
@@ -316,13 +312,7 @@ func urlFromCDP(ctx context.Context, urlCDP string, driverOptions scraperDriverO
 			if isJSON {
 				body, err := network.GetResponseBody(requestID).Do(ctx)
 				if err != nil {
-					// Fall back to OuterHTML if the response body is no
-					// longer available (e.g. evicted from Chrome's cache).
-					// The scraper will most likely still fail downstream on
-					// this fallback, since OuterHTML returns Chrome's
-					// HTML-wrapped view of the JSON rather than the JSON
-					// itself - but it's a better failure mode than losing
-					// the response entirely.
+					// e.g. evicted from Chrome's cache.
 					logger.Warnf("[scraper] could not get raw response body for JSON document, falling back to OuterHTML (the scrape will likely still fail as a result): %v", err)
 					return chromedp.OuterHTML("html", &res, chromedp.ByQuery).Do(ctx)
 				}
@@ -397,11 +387,7 @@ func getRemoteCDPWSAddress(ctx context.Context, url string) (string, error) {
 	return remote, err
 }
 
-// isJSONMimeType returns true if the given response MIME type indicates
-// JSON content (e.g. "application/json", "application/ld+json",
-// "text/json; charset=utf-8"), for deciding whether a CDP-fetched document
-// should be read via its raw network response body rather than the
-// rendered DOM.
+// isJSONMimeType reports whether mimeType indicates JSON content.
 func isJSONMimeType(mimeType string) bool {
 	mimeType, _, _ = strings.Cut(mimeType, ";")
 	mimeType = strings.TrimSpace(strings.ToLower(mimeType))
@@ -411,28 +397,10 @@ func isJSONMimeType(mimeType string) bool {
 		mimeType == "text/json"
 }
 
-// jsonDocumentTracker records whether the CDP-loaded page's main document
-// turned out to be JSON, and if so, which network request to fetch its raw
-// body from.
-//
-// It only ever considers the *first* Document-type response it sees, via
-// markDocument. Network.responseReceived fires with resourceType Document
-// for iframe navigations too, not just the top-level one, so a naive
-// "first Document that happens to be JSON" rule could latch onto an
-// iframe's JSON response instead of the main page's HTML - misidentifying
-// an HTML scrape as a JSON one. Redirects don't complicate this: a
-// pre-redirect response never gets its own responseReceived event (that
-// history arrives via requestWillBeSent's redirectResponse on the same
-// request instead), so the first Document response reliably corresponds to
-// the top-level navigation. A click-triggered navigation (via
-// setCDPClicks, which runs after the initial Navigate) is not treated as a
-// new "first" document either, so if a click leads to a JSON page, this
-// still reports the original navigation's result.
-//
-// It's written from chromedp's event-processing goroutine (via
-// markDocument, called from a ListenTarget callback) and read from the
-// action sequence passed to chromedp.Run (via mainDocument), so access is
-// synchronized with a mutex.
+// jsonDocumentTracker records the first Document response's request ID
+// and whether it's JSON. Iframes fire later Document responses too, so
+// only the first counts. Mutex-guarded: written on chromedp's event
+// goroutine, read from the action sequence.
 type jsonDocumentTracker struct {
 	mutex     sync.Mutex
 	requestID network.RequestID

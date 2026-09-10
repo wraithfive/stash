@@ -52,14 +52,8 @@ func TestJSONDocumentTrackerOnlyRecordsFirstDocument(t *testing.T) {
 	})
 
 	t.Run("first document is HTML, a later JSON response doesn't override it", func(t *testing.T) {
-		// This is the main-frame-vs-iframe scenario: an HTML scrape whose
-		// page contains an iframe that loads JSON (an embed widget, an ad
-		// frame) also fires a Document-type responseReceived for that
-		// iframe. Since the top-level HTML document is always the first
-		// Document response chromedp sees for a given navigation, the
-		// tracker must not let this later JSON response override it -
-		// otherwise an HTML scraper would incorrectly receive the iframe's
-		// JSON body instead of the page's HTML.
+		// e.g. an iframe firing a later JSON Document response must not
+		// override the main page's HTML.
 		var tracker jsonDocumentTracker
 
 		tracker.markDocument("req-main-page", "text/html")
@@ -71,13 +65,8 @@ func TestJSONDocumentTrackerOnlyRecordsFirstDocument(t *testing.T) {
 	})
 }
 
-// TestJSONDocumentTrackerConcurrentAccess exercises jsonDocumentTracker the
-// way urlFromCDP actually uses it: one goroutine (standing in for chromedp's
-// event-processing goroutine) calls markDocument while another goroutine
-// (standing in for the action sequence passed to chromedp.Run) calls
-// mainDocument, concurrently and repeatedly. Before requestID/isJSON/recorded
-// were guarded by a mutex, `go test -race` reliably flagged this exact
-// access pattern as a data race.
+// Mirrors urlFromCDP's usage: concurrent markDocument/mainDocument calls.
+// Fails under `go test -race` without the mutex.
 func TestJSONDocumentTrackerConcurrentAccess(t *testing.T) {
 	var tracker jsonDocumentTracker
 
